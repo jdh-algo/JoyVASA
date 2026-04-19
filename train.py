@@ -15,8 +15,20 @@ import src.utils as utils
 from src.dataset import infinite_data_loader
 from src.dataset.talkinghead_dataset_hungry import TalkingHeadDatasetHungry
 from src.modules.dit_talking_head import DitTalkingHead
-
+from logger import logger
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+import math
+import wandb
+import torch
+import matplotlib.pyplot as plt
+import io
+from PIL import Image
+import numpy as np
+from pathlib import Path
+import torchvision.transforms as transforms
+from collections import defaultdict
+
+
 
 def train(args, model, train_loader, val_loader, optimizer, save_dir, scheduler=None, writer=None, ):
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -75,8 +87,24 @@ def train(args, model, train_loader, val_loader, optimizer, save_dir, scheduler=
 
             if args.use_indicator:
                 if end_idx is not None:
-                    indicator = torch.arange(args.n_motions, device=device).expand(batch_size, -1) < end_idx.unsqueeze(
-                        1)
+                        # Log the creation process
+                        arange_tensor = torch.arange(args.n_motions, device=device)
+                        logger.debug(f"Arange tensor: {arange_tensor}")
+                        
+                        expanded = arange_tensor.expand(batch_size, -1)
+                        logger.debug(f"Expanded shape: {expanded.shape}")
+                        logger.debug(f"First row of expanded: {expanded[0]}")
+                        
+                        comparison = expanded < end_idx.unsqueeze(1)
+                        logger.debug(f"end_idx unsqueezed: {end_idx.unsqueeze(1).shape}")
+                        
+                        indicator = comparison
+                        logger.debug(f"Indicator shape: {indicator.shape}")
+                        logger.debug(f"First row indicator sums: {indicator[0].sum()}")
+                        logger.debug(f"Indicator example:\n{indicator[0]}")  # Show first batch item
+                    
+                  
+                        
                 else:
                     indicator = torch.ones(batch_size, args.n_motions, device=device)
             else:
@@ -98,6 +126,10 @@ def train(args, model, train_loader, val_loader, optimizer, save_dir, scheduler=
             else:
                 noise, target, _, _ = model(motion_coef_in, audio_in, prev_motion_coef, prev_audio_feat, indicator=indicator)
 
+            if it % 50 == 0:
+                visualize_expression_comparison(target, noise, iteration=it)
+            # visualize_expression_sequence_comparison(target, noise, n_frames=5, iteration=it)
+      
             loss_n, loss_exp, loss_exp_v, loss_exp_s, loss_ha, loss_hc, loss_hs, loss_ht = utils.compute_loss_new(args, i == 0, motion_coef_in, noise, target, prev_motion_coef, end_idx)
             loss_noise = loss_noise + loss_n / 2
             loss_exp = loss_exp + loss_exp / 2
@@ -201,7 +233,176 @@ def train(args, model, train_loader, val_loader, optimizer, save_dir, scheduler=
         if (it % args.val_iter == 0 or it == 0) or it == args.max_iter:
             val(args, model, val_loader, it, 1, 'val', writer)
 
+def visualize_expression_comparison(target, noise, save_dir='visualizations/expressions', iteration=None):
+    """
+    Visualize comparison between target and predicted expressions.
+    
+    Args:
+        target: Target expression tensor
+        noise: Predicted noise tensor
+        save_dir: Directory to save visualizations
+        iteration: Current training iteration (for filename)
+    """
+    import matplotlib.pyplot as plt
+    import os
+    from pathlib import Path
+    import torch
+    import numpy as np
 
+    # Create save directory
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+
+    # Convert to numpy arrays and move to CPU if needed
+    if torch.is_tensor(target):
+        target = target.detach().cpu().numpy()
+    if torch.is_tensor(noise):
+        noise = noise.detach().cpu().numpy()
+
+    # Take first sample from batch and first frame
+    target_frame = target[0, 0]  # First batch item, first frame
+    noise_frame = noise[0, 0]    # First batch item, first frame
+    
+    # Create a figure with three subplots side by side
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+
+    # Plot target expression
+    im1 = ax1.imshow(target_frame.reshape(1, -1), 
+                     aspect='auto', 
+                     cmap='RdBu_r',
+                     vmin=-3, 
+                     vmax=3)
+    ax1.set_title('Target Expression')
+    plt.colorbar(im1, ax=ax1)
+    ax1.set_yticks([])
+
+    # Plot predicted expression
+    im2 = ax2.imshow(noise_frame.reshape(1, -1), 
+                     aspect='auto', 
+                     cmap='RdBu_r',
+                     vmin=-3, 
+                     vmax=3)
+    ax2.set_title('Predicted Expression')
+    plt.colorbar(im2, ax=ax2)
+    ax2.set_yticks([])
+
+    # Plot difference
+    difference = noise_frame - target_frame
+    max_diff = np.abs(difference).max()
+    im3 = ax3.imshow(difference.reshape(1, -1),
+                     aspect='auto',
+                     cmap='RdBu_r',
+                     vmin=-max_diff,
+                     vmax=max_diff)
+    ax3.set_title('Difference (Predicted - Target)')
+    plt.colorbar(im3, ax=ax3)
+    ax3.set_yticks([])
+
+    # Add titles and adjust layout
+    if iteration is not None:
+        plt.suptitle(f'Expression Comparison - Iteration {iteration}')
+    plt.tight_layout()
+
+    # Save the figure
+    filename = f'expression_comparison_{iteration if iteration else "latest"}.png'
+    plt.savefig(os.path.join(save_dir, filename), bbox_inches='tight', dpi=300)
+    plt.close()
+
+def visualize_expression_sequence_comparison(target, noise, n_frames=5, save_dir='visualizations/expressions', iteration=None):
+    """
+    Visualize sequence of target vs predicted expressions.
+    
+    Args:
+        target: Target expression tensor (batch_size, seq_len, feat_dim)
+        noise: Predicted noise tensor (batch_size, seq_len, feat_dim)
+        n_frames: Number of frames to visualize
+        save_dir: Directory to save visualizations
+        iteration: Current training iteration (for filename)
+    """
+    import matplotlib.pyplot as plt
+    import os
+    from pathlib import Path
+    import torch
+    import numpy as np
+
+    # Create save directory
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+
+    # Convert to numpy arrays and move to CPU if needed
+    if torch.is_tensor(target):
+        target = target.detach().cpu().numpy()
+    if torch.is_tensor(noise):
+        noise = noise.detach().cpu().numpy()
+
+    # Take first sample from batch
+    target = target[0]  # First batch item
+    noise = noise[0]    # First batch item
+
+    # Get actual sequence length (minimum of both sequences)
+    seq_len = min(target.shape[0], noise.shape[0])
+    n_frames = min(n_frames, seq_len)  # Ensure we don't exceed sequence length
+    
+    # Select frames evenly spaced through the sequence
+    frame_indices = np.linspace(0, seq_len-1, n_frames, dtype=int)
+
+    # Create subplot grid
+    fig, axes = plt.subplots(n_frames, 3, figsize=(15, 3*n_frames))
+    
+    # If only one frame, wrap axes in list for consistent indexing
+    if n_frames == 1:
+        axes = axes.reshape(1, -1)
+
+    # For storing global min/max values
+    global_min = min(target.min(), noise.min())
+    global_max = max(target.max(), noise.max())
+    
+    for idx, frame_idx in enumerate(frame_indices):
+        # Ensure we don't exceed array bounds
+        safe_idx = min(frame_idx, seq_len-1)
+        
+        # Plot target
+        im1 = axes[idx, 0].imshow(target[safe_idx].reshape(1, -1), 
+                                 aspect='auto', 
+                                 cmap='RdBu_r',
+                                 vmin=global_min, 
+                                 vmax=global_max)
+        axes[idx, 0].set_title(f'Target (Frame {safe_idx})' if idx == 0 else f'Frame {safe_idx}')
+        axes[idx, 0].set_yticks([])
+
+        # Plot prediction
+        im2 = axes[idx, 1].imshow(noise[safe_idx].reshape(1, -1), 
+                                 aspect='auto', 
+                                 cmap='RdBu_r',
+                                 vmin=global_min, 
+                                 vmax=global_max)
+        axes[idx, 1].set_title('Prediction' if idx == 0 else '')
+        axes[idx, 1].set_yticks([])
+
+        # Plot difference
+        difference = noise[safe_idx] - target[safe_idx]
+        max_diff = np.abs(difference).max()
+        im3 = axes[idx, 2].imshow(difference.reshape(1, -1), 
+                                 aspect='auto', 
+                                 cmap='RdBu_r',
+                                 vmin=-max_diff, 
+                                 vmax=max_diff)
+        axes[idx, 2].set_title('Difference' if idx == 0 else '')
+        axes[idx, 2].set_yticks([])
+
+    # Add colorbars
+    plt.colorbar(im1, ax=axes[:, 0], label='Expression Value')
+    plt.colorbar(im2, ax=axes[:, 1], label='Expression Value')
+    plt.colorbar(im3, ax=axes[:, 2], label='Difference')
+
+    # Add title and adjust layout
+    if iteration is not None:
+        plt.suptitle(f'Expression Sequence Comparison - Iteration {iteration}')
+    plt.tight_layout()
+
+    # Save the figure
+    filename = f'expression_sequence_comparison_{iteration if iteration else "latest"}.png'
+    plt.savefig(os.path.join(save_dir, filename), bbox_inches='tight', dpi=300)
+    plt.close()
+    
 @torch.no_grad()
 def val(args, model, test_loader, current_iter, n_rounds=1, mode='val', writer=None):
     print("test ... ")
@@ -279,6 +480,9 @@ def val(args, model, test_loader, current_iter, n_rounds=1, mode='val', writer=N
                     noise, target, _, _ = model(motion_coef_in, audio_in, prev_motion_coef, prev_audio_feat, indicator=indicator)
 
                 loss_n, loss_exp, loss_exp_v, loss_exp_s, loss_ha, loss_hc, loss_hs, loss_ht = utils.compute_loss_new(args, i == 0, motion_coef_in, noise, target, prev_motion_coef, end_idx)
+
+
+            
 
                 # simple loss
                 loss_noise = loss_noise + loss_n / 2
@@ -405,14 +609,7 @@ def main(args, option_text=None):
             f.write(option_text)
         writer.add_text('options', option_text)
 
-    # logger
-    logging.basicConfig(filename=os.path.join(str(log_dir), "log.txt"), 
-                    level=logging.INFO,
-                    format='%(asctime)s %(message)s', 
-                    datefmt='%Y/%m/%d %H:%M:%S')
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
-    logging.info(f"exp_name: {exp_dir.name}")
-    logging.info(f'model parameters: {count_parameters(model)}')
+
 
     # optimizer and scheduler
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)

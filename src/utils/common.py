@@ -3,7 +3,8 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-
+from logger import logger
+import traceback
 
 class NullableArgs:
     def __init__(self, namespace):
@@ -50,71 +51,141 @@ def get_model_path(exp_name, iteration, model_type='DPT'):
 
 
 def get_pose_input(coef_dict, rot_repr, with_global_pose):
-    if rot_repr == 'aa':
-        pose_input = coef_dict['pose'] if with_global_pose else coef_dict['pose'][..., 63:70]
-        # Remove mouth rotation round y, z axis
-        # pose_input = pose_input[..., :-2]
-    else:
-        raise ValueError(f'Unknown rotation representation: {rot_repr}')
-    return pose_input
+    """Get pose input based on rotation representation"""
+    logger.debug("\n=== Getting Pose Input ===")
+    logger.debug(f"Rotation representation: {rot_repr}")
+    logger.debug(f"With global pose: {with_global_pose}")
+    
+    try:
+        if rot_repr == 'aa':
+            pose_input = coef_dict['pose'] if with_global_pose else coef_dict['pose'][..., 63:70]
+            logger.debug(f"Pose input shape: {pose_input.shape}")
+            return pose_input
+        else:
+            raise ValueError(f'Unknown rotation representation: {rot_repr}')
+            
+    except Exception as e:
+        logger.error(f"Error in get_pose_input: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
 
 
 def get_motion_coef(coef_dict, rot_repr, with_global_pose=False, norm_stats=None):
-    if norm_stats is not None:
-        if rot_repr == 'aa':
-            keys = ['exp', 'pose']
-            coef_dict = {k: (coef_dict[k] - norm_stats[f'{k}_mean']) / norm_stats[f'{k}_std'] for k in keys}
-            pose_coef = get_pose_input(coef_dict, rot_repr, with_global_pose)
-            return torch.cat([coef_dict['exp'], pose_coef], dim=-1)
-        elif rot_repr == 'emo':
-            print(f"coef_dict.keys(): {coef_dict.keys()}")
-            keys = ['exp', 'pose', 'emotion']
-            return torch.cat([coef_dict['exp'], coef_dict["pose"], coef_dict["emotion"]], dim=-1)
+    """Get combined motion coefficients"""
+    logger.debug("\n=== Getting Motion Coefficients ===")
+    logger.debug(f"Rotation representation: {rot_repr}")
+    logger.debug(f"With global pose: {with_global_pose}")
+    logger.debug(f"Using normalization stats: {norm_stats is not None}")
 
-            # return torch.cat([[coef_dict[key]] for key in keys], dim=-1)
+    try:
+        if norm_stats is not None:
+            logger.debug("Applying normalization stats")
+            if rot_repr == 'aa':
+                keys = ['exp', 'pose']
+                logger.debug(f"Using keys for aa: {keys}")
+                
+                # Normalize coefficients
+                coef_dict = {
+                    k: (coef_dict[k] - norm_stats[f'{k}_mean']) / norm_stats[f'{k}_std'] 
+                    for k in keys
+                }
+                logger.debug("Coefficients normalized")
+                
+                # Get pose input
+                pose_coef = get_pose_input(coef_dict, rot_repr, with_global_pose)
+                logger.debug(f"Pose coefficients shape: {pose_coef.shape}")
+                
+                combined = torch.cat([coef_dict['exp'], pose_coef], dim=-1)
+                logger.debug(f"Combined coefficients shape: {combined.shape}")
+                return combined
+                
+            elif rot_repr == 'emo':
+                logger.debug(f"Input coef_dict keys: {coef_dict.keys()}")
+                keys = ['exp', 'pose', 'emotion']
+                combined = torch.cat([coef_dict['exp'], coef_dict["pose"], coef_dict["emotion"]], dim=-1)
+                logger.debug(f"Combined EMO coefficients shape: {combined.shape}")
+                return combined
+            else:
+                raise ValueError(f'Unknown rotation representation {rot_repr}!')
         else:
-            raise ValueError(f'Unknown rotation representation {rot_repr}!')
-    else:
-        if rot_repr == 'aa':
-            keys = ['exp', 'pose']
-            pose_coef = get_pose_input(coef_dict, rot_repr, with_global_pose)
-            return torch.cat([coef_dict['exp'], pose_coef], dim=-1)
-        elif rot_repr == 'emo':
-            # print(f"coef_dict.keys(): {coef_dict.keys()}")
-            keys = ['exp', 'pose', 'emotion']
-            return torch.cat([coef_dict['exp'], coef_dict["pose"], coef_dict["emotion"]], dim=-1)
-            # return torch.cat([[coef_dict[key]] for key in keys], dim=-1)
-        else:
-            raise ValueError(f'Unknown rotation representation {rot_repr}!')
+            logger.debug("No normalization stats provided")
+            if rot_repr == 'aa':
+                keys = ['exp', 'pose']
+                pose_coef = get_pose_input(coef_dict, rot_repr, with_global_pose)
+                logger.debug(f"Pose coefficients shape: {pose_coef.shape}")
+                combined = torch.cat([coef_dict['exp'], pose_coef], dim=-1)
+                logger.debug(f"Combined coefficients shape: {combined.shape}")
+                return combined
+            elif rot_repr == 'emo':
+                logger.debug(f"Input coef_dict keys: {coef_dict.keys()}")
+                keys = ['exp', 'pose', 'emotion']
+                combined = torch.cat([coef_dict['exp'], coef_dict["pose"], coef_dict["emotion"]], dim=-1)
+                logger.debug(f"Combined EMO coefficients shape: {combined.shape}")
+                return combined
+            else:
+                raise ValueError(f'Unknown rotation representation {rot_repr}!')
+
+    except Exception as e:
+        logger.error(f"Error in get_motion_coef: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
 
 
 
 def get_coef_dict(motion_coef, shape_coef=None, denorm_stats=None, with_global_pose=False, rot_repr='aa'):
-    coef_dict = {
-        'exp': motion_coef[..., :63]
-    }
-    if rot_repr == 'aa':
-        if with_global_pose:
-            coef_dict['pose'] = motion_coef[..., 63:]
-        else:
-            placeholder = torch.zeros_like(motion_coef[..., :3])
-            coef_dict['pose'] = torch.cat([placeholder, motion_coef[..., -1:]], dim=-1)
-        # Add back rotation around y, z axis
-        # coef_dict['pose'] = torch.cat([coef_dict['pose'], torch.zeros_like(motion_coef[..., :2])], dim=-1)
-    else:
-        raise ValueError(f'Unknown rotation representation {rot_repr}!')
-
-    if denorm_stats is not None:
-        coef_dict = {k: coef_dict[k] * denorm_stats[f'{k}_std'] + denorm_stats[f'{k}_mean'] for k in coef_dict}
-
-    if not with_global_pose:
+    """Convert motion coefficients back to dictionary format"""
+    logger.debug("\n=== Converting Motion Coefficients to Dictionary ===")
+    logger.debug(f"Motion coefficients shape: {motion_coef.shape}")
+    logger.debug(f"Rotation representation: {rot_repr}")
+    logger.debug(f"With global pose: {with_global_pose}")
+    
+    try:
+        # Get expression coefficients
+        coef_dict = {
+            'exp': motion_coef[..., :63]
+        }
+        logger.debug(f"Expression coefficients shape: {coef_dict['exp'].shape}")
+        
+        # Handle pose based on rotation representation
         if rot_repr == 'aa':
-            coef_dict['pose'][..., :3] = 0
+            if with_global_pose:
+                coef_dict['pose'] = motion_coef[..., 63:]
+                logger.debug("Using full pose coefficients")
+            else:
+                placeholder = torch.zeros_like(motion_coef[..., :3])
+                coef_dict['pose'] = torch.cat([placeholder, motion_coef[..., -1:]], dim=-1)
+                logger.debug("Created pose coefficients with placeholder")
         else:
             raise ValueError(f'Unknown rotation representation {rot_repr}!')
-
-    return coef_dict
+            
+        # Apply denormalization if stats provided
+        if denorm_stats is not None:
+            logger.debug("Applying denormalization stats")
+            coef_dict = {
+                k: coef_dict[k] * denorm_stats[f'{k}_std'] + denorm_stats[f'{k}_mean'] 
+                for k in coef_dict
+            }
+            
+        # Zero out global pose if not using it
+        if not with_global_pose:
+            if rot_repr == 'aa':
+                coef_dict['pose'][..., :3] = 0
+                logger.debug("Zeroed out global pose")
+            else:
+                raise ValueError(f'Unknown rotation representation {rot_repr}!')
+                
+        logger.debug("Final coefficient dictionary shapes:")
+        for k, v in coef_dict.items():
+            logger.debug(f"  {k}: {v.shape}")
+            
+        return coef_dict
+        
+    except Exception as e:
+        logger.error(f"Error in get_coef_dict: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
 
 def coef_dict_to_vertices(coef_dict, flame, rot_repr='aa', ignore_global_rot=False, flame_batch_size=512):
@@ -139,72 +210,144 @@ def coef_dict_to_vertices(coef_dict, flame, rot_repr='aa', ignore_global_rot=Fal
 
     return vert_list
 
-
 def _truncate_audio(audio, end_idx, pad_mode='zero'):
-    batch_size = audio.shape[0]
-    audio_trunc = audio.clone()
-    if pad_mode == 'replicate':
-        for i in range(batch_size):
-            audio_trunc[i, end_idx[i]:] = audio_trunc[i, end_idx[i] - 1]
-    elif pad_mode == 'zero':
-        for i in range(batch_size):
-            audio_trunc[i, end_idx[i]:] = 0
-    else:
-        raise ValueError(f'Unknown pad mode {pad_mode}!')
-
-    return audio_trunc
-
+    """Truncate audio and pad remainder"""
+    logger.debug("\n=== Truncating Audio ===")
+    logger.debug(f"Audio input shape: {audio.shape}")
+    logger.debug(f"End indices: {end_idx}")
+    logger.debug(f"Pad mode: {pad_mode}")
+    
+    try:
+        batch_size = audio.shape[0]
+        audio_trunc = audio.clone()
+        
+        if pad_mode == 'replicate':
+            logger.debug("Using replicate padding")
+            for i in range(batch_size):
+                audio_trunc[i, end_idx[i]:] = audio_trunc[i, end_idx[i] - 1]
+        elif pad_mode == 'zero':
+            logger.debug("Using zero padding")
+            for i in range(batch_size):
+                audio_trunc[i, end_idx[i]:] = 0
+        else:
+            raise ValueError(f'Unknown pad mode {pad_mode}!')
+            
+        logger.debug(f"Truncated audio shape: {audio_trunc.shape}")
+        return audio_trunc
+        
+    except Exception as e:
+        logger.error(f"Error in _truncate_audio: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
 def _truncate_coef_dict(coef_dict, end_idx, pad_mode='zero'):
-    batch_size = coef_dict['exp'].shape[0]
-    coef_dict_trunc = {k: v.clone() for k, v in coef_dict.items()}
-    if pad_mode == 'replicate':
-        for i in range(batch_size):
-            for k in coef_dict_trunc:
-                coef_dict_trunc[k][i, end_idx[i]:] = coef_dict_trunc[k][i, end_idx[i] - 1]
-    elif pad_mode == 'zero':
-        for i in range(batch_size):
-            for k in coef_dict:
-                coef_dict_trunc[k][i, end_idx[i]:] = 0
-    else:
-        raise ValueError(f'Unknown pad mode: {pad_mode}!')
-
-    return coef_dict_trunc
-
-
-def truncate_coef_dict_and_audio(audio, coef_dict, n_motions, audio_unit=640, pad_mode='zero'):
-    batch_size = audio.shape[0]
-    end_idx = torch.randint(1, n_motions, (batch_size,), device=audio.device)
-    audio_end_idx = (end_idx * audio_unit).long()
-    # mask = torch.arange(n_motions, device=audio.device).expand(batch_size, -1) < end_idx.unsqueeze(1)
-
-    # truncate audio
-    audio_trunc = _truncate_audio(audio, audio_end_idx, pad_mode=pad_mode)
-
-    # truncate coef dict
-    coef_dict_trunc = _truncate_coef_dict(coef_dict, end_idx, pad_mode=pad_mode)
-
-    return audio_trunc, coef_dict_trunc, end_idx
-
+    """Truncate coefficient dictionary and pad remainder"""
+    logger.debug("\n=== Truncating Coefficient Dictionary ===")
+    logger.debug(f"End indices: {end_idx}")
+    logger.debug(f"Pad mode: {pad_mode}")
+    logger.debug("Input coefficient shapes:")
+    for k, v in coef_dict.items():
+        logger.debug(f"  {k}: {v.shape}")
+    
+    try:
+        batch_size = coef_dict['exp'].shape[0]
+        coef_dict_trunc = {k: v.clone() for k, v in coef_dict.items()}
+        
+        if pad_mode == 'replicate':
+            logger.debug("Using replicate padding")
+            for i in range(batch_size):
+                for k in coef_dict_trunc:
+                    coef_dict_trunc[k][i, end_idx[i]:] = coef_dict_trunc[k][i, end_idx[i] - 1]
+        elif pad_mode == 'zero':
+            logger.debug("Using zero padding")
+            for i in range(batch_size):
+                for k in coef_dict:
+                    coef_dict_trunc[k][i, end_idx[i]:] = 0
+        else:
+            raise ValueError(f'Unknown pad mode: {pad_mode}!')
+            
+        logger.debug("Truncated coefficient shapes:")
+        for k, v in coef_dict_trunc.items():
+            logger.debug(f"  {k}: {v.shape}")
+            
+        return coef_dict_trunc
+        
+    except Exception as e:
+        logger.error(f"Error in _truncate_coef_dict: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
 def truncate_motion_coef_and_audio(audio, motion_coef, n_motions, audio_unit=640, pad_mode='zero'):
-    batch_size = audio.shape[0]
-    end_idx = torch.randint(1, n_motions, (batch_size,), device=audio.device)
-    audio_end_idx = (end_idx * audio_unit).long()
-    # mask = torch.arange(n_motions, device=audio.device).expand(batch_size, -1) < end_idx.unsqueeze(1)
-
-    # truncate audio
-    audio_trunc = _truncate_audio(audio, audio_end_idx, pad_mode=pad_mode)
-
-    # prepare coef dict and stats
-    coef_dict = {'exp': motion_coef[..., :63], 'pose_any': motion_coef[..., 63:]}
-
-    # truncate coef dict
-    coef_dict_trunc = _truncate_coef_dict(coef_dict, end_idx, pad_mode=pad_mode)
-    motion_coef_trunc = torch.cat([coef_dict_trunc['exp'], coef_dict_trunc['pose_any']], dim=-1)
-
-    return audio_trunc, motion_coef_trunc, end_idx
-
+    """
+    Truncate motion coefficients and corresponding audio at random points.
+    
+    Args:
+        audio: Audio tensor [B, T]
+        motion_coef: Motion coefficients [B, T, D]
+        n_motions: Number of motion frames
+        audio_unit: Audio samples per motion frame
+        pad_mode: Padding mode ('zero' or 'replicate')
+        
+    Returns:
+        audio_trunc: Truncated audio
+        motion_coef_trunc: Truncated motion coefficients
+        end_idx: Truncation indices
+    """
+    logger.debug("\n=== Starting Motion & Audio Truncation ===")
+    logger.debug(f"Initial shapes:")
+    logger.debug(f"  Audio: {audio.shape}")
+    logger.debug(f"  Motion coefficients: {motion_coef.shape}")
+    logger.debug(f"Parameters:")
+    logger.debug(f"  n_motions: {n_motions}")
+    logger.debug(f"  audio_unit: {audio_unit}")
+    logger.debug(f"  pad_mode: {pad_mode}")
+    
+    try:
+        # Generate random truncation points
+        batch_size = audio.shape[0]
+        end_idx = torch.randint(1, n_motions, (batch_size,), device=audio.device)
+        audio_end_idx = (end_idx * audio_unit).long()
+        
+        logger.debug(f"Generated indices:")
+        logger.debug(f"  Motion end indices: {end_idx}")
+        logger.debug(f"  Audio end indices: {audio_end_idx}")
+        
+        # Truncate audio
+        logger.debug("\nTruncating audio...")
+        audio_trunc = _truncate_audio(audio, audio_end_idx, pad_mode=pad_mode)
+        logger.debug(f"Truncated audio shape: {audio_trunc.shape}")
+        
+        # Prepare coefficient dictionary
+        logger.debug("\nPreparing coefficient dictionary...")
+        coef_dict = {
+            'exp': motion_coef[..., :63],
+            'pose_any': motion_coef[..., 63:]
+        }
+        logger.debug("Split motion coefficients:")
+        logger.debug(f"  Expression shape: {coef_dict['exp'].shape}")
+        logger.debug(f"  Pose shape: {coef_dict['pose_any'].shape}")
+        
+        # Truncate coefficients
+        logger.debug("\nTruncating coefficients...")
+        coef_dict_trunc = _truncate_coef_dict(coef_dict, end_idx, pad_mode=pad_mode)
+        
+        # Recombine truncated coefficients
+        motion_coef_trunc = torch.cat([
+            coef_dict_trunc['exp'], 
+            coef_dict_trunc['pose_any']
+        ], dim=-1)
+        
+        logger.debug("\nFinal outputs:")
+        logger.debug(f"  Truncated audio shape: {audio_trunc.shape}")
+        logger.debug(f"  Truncated motion shape: {motion_coef_trunc.shape}")
+        logger.debug(f"  End indices shape: {end_idx.shape}")
+        
+        return audio_trunc, motion_coef_trunc, end_idx
+        
+    except Exception as e:
+        logger.error(f"Error in truncate_motion_coef_and_audio: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
 def nt_xent_loss(feature_a, feature_b, temperature):
     """
